@@ -1,0 +1,126 @@
+CS-4760 Project 5: Resource Management & Deadlock Detection
+============================================================
+Author:      Cynthia Sims
+Date:        2026-04-21
+Environment: opsys.cs.umsl.edu  (Linux, gcc)
+
+
+Overview
+--------
+Two-process system that simulates resource allocation and deadlock detection.
+
+  oss     -- master process; manages a shared resource descriptor table,
+             a simulated clock, and a System V message queue.  Forks worker
+             processes, grants or queues resource requests, and runs periodic
+             deadlock detection using Banker's algorithm.
+
+  worker  -- child process; each turn randomly requests (70%) or releases
+             (30%) one unit of one resource, communicates with oss via the
+             message queue, and exits when its simulated time limit expires
+             or oss tells it to terminate.
+
+
+Files
+-----
+  shared.h   -- IPC keys, constants, PCB/SharedMem/Message structs
+  oss.c      -- master scheduler / resource manager
+  worker.c   -- child process
+  Makefile   -- suffix rules; builds oss and worker
+  README     -- this file
+
+
+Compile
+-------
+  make          builds both executables
+  make clean    removes object files, executables, and oss.log
+
+
+Run
+---
+  ./oss [options]
+
+  Options:
+    -h              print help and exit
+    -n proc         total number of worker processes to launch (default: 20)
+    -s simul        maximum simultaneous workers (default: 5, hard cap: 18)
+    -t seconds      simulated time limit per child in seconds (default: 3)
+    -i ms           simulated milliseconds between worker launches (default: 100)
+    -f logfile      log file path (default: oss.log)
+
+  Examples:
+    ./oss -n 5 -s 3 -t 5 -f test.log
+    ./oss -n 20 -s 18 -t 2
+    ./oss -h
+
+  Termination:
+    oss stops forking after -n total workers have been launched or after
+    5 real-time seconds, whichever comes first.  A SIGALRM fires after
+    30 real-time seconds as a hard deadline.  Ctrl-C (SIGINT) also triggers
+    a clean shutdown.  In all cases oss kills remaining children, frees IPC
+    resources, and prints final statistics.
+
+
+IPC Resources
+-------------
+  Shared memory key:  0x47605  (one segment: SimClock + PCB table + resource tables)
+  Message queue key:  0x47606
+
+  If the program exits uncleanly, check for leftover IPC with:
+    ipcs -m
+    ipcs -q
+  and remove them with:
+    ipcrm -m <shmid>
+    ipcrm -q <msgid>
+
+
+Design Notes
+------------
+Resource table
+  10 resource classes, 5 instances each (50 total).
+  oss tracks available[], allocation[process][resource], and
+  request[process][resource] (1 if blocked waiting for that resource).
+  Workers only read the simulated clock from shared memory; all allocation
+  data is managed exclusively by oss.
+
+Message protocol
+  Worker to oss: mtype = 1, msg_action = MSG_REQUEST / MSG_RELEASE / MSG_TERMINATE
+    mvalue > 0  -- request one unit of resource (mvalue - 1)
+    mvalue < 0  -- release one unit of resource (-mvalue - 1)
+    mvalue = 0  -- terminate acknowledgment
+  Oss to worker: mtype = worker_pid, msg_action = MSG_TURN / MSG_GRANT / MSG_TERMINATE
+
+Blocked processes
+  When a request cannot be granted, oss adds the worker to a per-resource
+  FIFO wait queue and sends NO reply; the worker stays blocked in msgrcv.
+  When another process releases that resource, oss dequeues and grants the
+  first waiter by sending a MSG_GRANT.
+
+Deadlock detection (every 1 simulated second)
+  Implements the resource-allocation-graph reduction variant of Banker's
+  algorithm (detection mode, not avoidance):
+    1. Work[] = available[]
+    2. Finish[i] = false for every occupied PCB slot
+    3. Find i where Finish[i]==false and request[i] <= Work
+    4. If found: Work += allocation[i]; Finish[i] = true; goto 3
+    5. Any Finish[i]==false => deadlocked
+  oss terminates one victim from the deadlocked set, frees its resources
+  (which may unblock other processes), then re-runs detection.
+
+Simulated clock
+  Increments by 10 ms (10,000,000 ns) each main-loop iteration.
+  Only oss writes; workers read to check their time limit.
+
+Logging
+  Output goes to both stdout and the log file.  Writing stops after 10,000
+  lines to prevent runaway files.  Worker output does NOT go to the log.
+  A resource table is printed every 0.5 simulated seconds.
+  Final statistics (total requests, immediate-grant percentage, deadlock
+  detection runs, and deadlock kills) are printed at the end of every run.
+
+
+Generative AI Usage
+-------------------
+Claude Code (claude.ai/code) was used to assist with the design and
+implementation of this project, including struct layout, IPC boilerplate,
+and the deadlock-detection loop.  All code was reviewed and verified by
+the author.  Use disclosed per course policy.
