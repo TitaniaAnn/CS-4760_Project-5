@@ -1,2 +1,9 @@
 CLAUDE.md
 docs/cs4760Assignment5Spring2026.pdf
+oss
+oss.log
+worker
+.claude/settings.local.json
+worker.o
+oss.o
+

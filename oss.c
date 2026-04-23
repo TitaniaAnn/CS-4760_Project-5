@@ -307,8 +307,13 @@ static void free_all_resources(int slot)
         }
     }
 
-    /* Clear the blocked flag in case it was set but the resource was in
-     * a class where held == 0 (e.g., blocked but allocation not yet updated). */
+    /* Clear all request flags for this slot — the loop above clears only
+     * resources where held > 0, but a blocked worker has request[slot][r]=1
+     * for the resource it was waiting on (where held==0).  Leaving it set
+     * would leave stale state in shared memory even though occupied=0 makes
+     * the deadlock detector skip the slot correctly. */
+    memset(shm->request[slot], 0, sizeof(shm->request[slot]));
+
     shm->proctable[slot].blocked          = 0;
     shm->proctable[slot].blocked_resource = -1;
 }
@@ -494,14 +499,32 @@ static void maybe_launch_worker(void)
     int slot = find_free_slot();
     if (slot == -1) return;
 
+    /* Block signals so sig_handler cannot fire between fork() and the
+     * proctable update below — otherwise the new child would be invisible
+     * to the handler and escape SIGKILL, leaving an orphan. */
+    sigset_t block_mask, old_mask;
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGINT);
+    sigaddset(&block_mask, SIGTERM);
+    sigaddset(&block_mask, SIGALRM);
+    sigprocmask(SIG_BLOCK, &block_mask, &old_mask);
+
     pid_t pid = fork();
-    if (pid < 0) { perror("fork"); return; }
+    if (pid < 0) {
+        perror("fork");
+        sigprocmask(SIG_SETMASK, &old_mask, NULL);
+        return;
+    }
 
     if (pid == 0) {
         /* ── Child process ─────────────────────────────────────────────
-         * Convert all arguments to strings and exec the worker binary.
-         * The child inherits the open shared memory and message queue
-         * file descriptors; worker.c re-attaches them by key. */
+         * Restore default signal dispositions and unblock signals before
+         * exec so the worker process responds normally to signals. */
+        signal(SIGINT,  SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        signal(SIGALRM, SIG_DFL);
+        sigprocmask(SIG_SETMASK, &old_mask, NULL);
+
         char s_slot[16], s_tsec[16], s_tns[16], s_csec[16], s_cns[16];
         snprintf(s_slot, sizeof(s_slot), "%d", slot);
         snprintf(s_tsec, sizeof(s_tsec), "%d", t_limit_s);
@@ -526,6 +549,9 @@ static void maybe_launch_worker(void)
     currently_running++;
     last_launch_s  = shm->clock.sec;
     last_launch_ns = shm->clock.ns;
+
+    /* Proctable is fully updated — safe to unblock signals now. */
+    sigprocmask(SIG_SETMASK, &old_mask, NULL);
 
     log_line("Master: forked worker P%d (pid %d) at time %u:%u",
              slot, (int)pid, shm->clock.sec, shm->clock.ns);
@@ -609,8 +635,8 @@ static void dispatch_one_turn(void)
  * runs on a given machine, ensuring workers' 3-second simulated limits
  * always correspond to ~3 real seconds regardless of server load.
  *
- * A 50 ms cap prevents large jumps if the process was suspended
- * (e.g., during a slow fork/exec or scheduler preemption).
+ * A 1-second cap prevents runaway jumps if the process was suspended
+ * (e.g., during a slow fork/exec or heavy scheduler preemption).
  */
 static void advance_clock(void)
 {
@@ -630,15 +656,18 @@ static void advance_clock(void)
 
     if (elapsed_ns <= 0) return;
 
-    /* Cap: prevent a single huge jump from a scheduling pause. */
-    if (elapsed_ns > 50000000L) elapsed_ns = 50000000L;  /* 50 ms max */
+    /* Cap at 1 second to prevent runaway jumps from long preemptions or
+     * a slow fork/exec.  Values up to 1 s are reflected faithfully so
+     * the sim clock stays at roughly 1:1 with real time even on a loaded
+     * server where usleep() sleeps far longer than requested. */
+    if (elapsed_ns > 1000000000L) elapsed_ns = 1000000000L;
 
-    /* Advance sim clock by the elapsed real nanoseconds (1:1 ratio). */
-    shm->clock.ns += (unsigned int)elapsed_ns;
-    if (shm->clock.ns >= 1000000000u) {
-        shm->clock.sec++;
-        shm->clock.ns -= 1000000000u;
-    }
+    /* Use unsigned long arithmetic to carry seconds correctly without
+     * overflow — elapsed_ns can be up to 1e9, which added to a ns value
+     * near 1e9 would exceed a 32-bit unsigned int. */
+    unsigned long total_ns = (unsigned long)shm->clock.ns + (unsigned long)elapsed_ns;
+    shm->clock.sec += (unsigned int)(total_ns / 1000000000UL);
+    shm->clock.ns   = (unsigned int)(total_ns % 1000000000UL);
 }
 
 
@@ -943,13 +972,19 @@ static void sig_handler(int sig)
 {
     (void)sig;  /* all three signals share this handler; signal identity is irrelevant */
 
-    /* Kill all children. */
+    /* Kill all children with SIGKILL (cannot be caught or ignored) so they
+     * die immediately regardless of what syscall they're blocked in. */
     if (shm) {
         for (int i = 0; i < MAX_PROCESSES; i++) {
             if (shm->proctable[i].occupied)
-                kill(shm->proctable[i].pid, SIGTERM);
+                kill(shm->proctable[i].pid, SIGKILL);
         }
     }
+
+    /* Reap every child before exiting so no worker appears as an orphan
+     * in ps after oss is gone.  Returns when no children remain (ECHILD). */
+    while (waitpid(-1, NULL, 0) > 0)
+        ;
 
     print_statistics();
     cleanup_ipc();
@@ -1075,6 +1110,19 @@ int main(int argc, char *argv[])
         int stop_forking = (total_launched >= n_limit)
                         || ((time(NULL) - start_real) >= WALL_CLOCK_LIMIT);
         done = stop_forking && (currently_running == 0);
+
+        /* Sleep briefly so that advance_clock() measures a meaningful real-time
+         * interval on each call.  Without this, a tight loop on a fast CPU
+         * produces elapsed_ns ≈ 50 ns per iteration — the sim clock would
+         * barely advance even after 30 real seconds and workers would never
+         * reach their simulated time limit.
+         *
+         * With usleep(1000) and real-time advance_clock():
+         *   fast server  (actual sleep ~1 ms)  → ~1000 iters/s → 1 sim s / real s
+         *   loaded server (actual sleep ~50 ms) → ~20 iters/s  → 1 sim s / real s
+         * The real-time approach measures ACTUAL elapsed time, so the sim clock
+         * stays at 1:1 with reality regardless of how long the OS oversleeps. */
+        usleep(1000);
     }
 
     print_statistics();
