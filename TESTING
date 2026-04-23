@@ -1,0 +1,238 @@
+CS-4760 Project 5 — Test Plan
+==============================
+Run all tests on opsys.cs.umsl.edu after a clean build.
+Each test lists the command, what to observe, and what pass/fail looks like.
+
+
+────────────────────────────────────────────────────────────────
+T01  Clean build — no warnings
+────────────────────────────────────────────────────────────────
+Command:
+    make clean && make
+
+Pass:  Both executables built. Zero compiler warnings or errors.
+Fail:  Any "error:" or "warning:" line in gcc output.
+
+
+────────────────────────────────────────────────────────────────
+T02  Help flag
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -h
+
+Pass:  Prints usage line mentioning [-h] [-n] [-s] [-t] [-i] [-f].
+       Exits 0. No IPC created (ipcs -m / ipcs -q unchanged).
+Fail:  Crash, hang, or IPC created.
+
+
+────────────────────────────────────────────────────────────────
+T03  Minimal run — basic message flow and clean exit
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 3 -s 2 -t 3 -f t03.log
+
+Pass:
+  - Forks exactly 3 workers (P0, P1, P2 appear in log).
+  - Workers request and release resources; grants logged.
+  - Program exits on its own (no hang).
+  - Final statistics block printed.
+  - t03.log created and non-empty.
+Fail:  Hang, crash, no log file, missing statistics.
+
+
+────────────────────────────────────────────────────────────────
+T04  IPC cleanup after normal exit
+────────────────────────────────────────────────────────────────
+Commands (run in sequence):
+    ipcs -m | grep -c "0x47605"   # note count before (expect 0)
+    ipcs -q | grep -c "0x47606"
+    ./oss -n 3 -s 2 -t 2 -f /dev/null
+    ipcs -m | grep -c "0x47605"   # expect 0 again
+    ipcs -q | grep -c "0x47606"   # expect 0 again
+
+Pass:  Both counts return 0 after the run.
+Fail:  Non-zero counts — leaked shared memory or message queue.
+
+Cleanup if leaked:
+    ipcs -m                        # find shmid
+    ipcs -q                        # find msqid
+    ipcrm -m <shmid>
+    ipcrm -q <msqid>
+
+
+────────────────────────────────────────────────────────────────
+T05  IPC cleanup after SIGINT (Ctrl-C)
+────────────────────────────────────────────────────────────────
+Commands:
+    ./oss -n 40 -s 10 -t 10 &
+    sleep 2
+    kill -INT $!
+    wait $!
+    ipcs -m | grep -c "0x47605"   # expect 0
+    ipcs -q | grep -c "0x47606"   # expect 0
+
+Pass:  Final statistics printed; IPC keys absent after kill.
+Fail:  Leftover IPC segments or no statistics output.
+
+
+────────────────────────────────────────────────────────────────
+T06  Simultaneous-process cap (-s and MAX_RUNNING=18)
+────────────────────────────────────────────────────────────────
+Commands:
+    ./oss -n 40 -s 5 -t 5 -f t06.log &
+    # While running, check active count several times:
+    sleep 1; ps aux | grep worker | grep -v grep | wc -l
+
+Pass:  Worker count never exceeds 5 (s_limit) or 18 (hard cap).
+Fail:  Worker count exceeds s_limit or 18.
+
+Also verify in t06.log:
+    grep "forked worker" t06.log | wc -l     # should equal n (up to 40 or 5-sec cap)
+
+
+────────────────────────────────────────────────────────────────
+T07  Wall-clock forking cap (5 real seconds)
+────────────────────────────────────────────────────────────────
+Command:
+    time ./oss -n 1000 -s 5 -t 3 -f t07.log
+
+Pass:
+  - Real wall time is roughly 5-8 seconds (5s fork window + drain).
+  - "Total resource requests" in statistics > 0.
+  - oss does not fork 1000 workers.
+Fail:  Run takes > 60 seconds (not stopping), or forks thousands of workers.
+
+
+────────────────────────────────────────────────────────────────
+T08  Custom log file
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 3 -s 2 -t 2 -f mytest.log
+    ls -l mytest.log
+    head -5 mytest.log
+    tail -5 mytest.log
+
+Pass:
+  - mytest.log exists and is non-empty.
+  - First line contains "OSS started".
+  - Last lines contain statistics.
+  - Default oss.log is NOT created (or is unchanged if pre-existing).
+Fail:  Log file missing, empty, or wrong file created.
+
+
+────────────────────────────────────────────────────────────────
+T09  Log line cap (10,000 lines)
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 1000 -s 18 -t 10 -f t09.log
+    wc -l t09.log
+
+Pass:  Line count is <= ~10,100 (10,000 cap + table headers + statistics).
+Fail:  Hundreds of thousands of lines (cap not enforced).
+
+
+────────────────────────────────────────────────────────────────
+T10  Blocking and unblocking (resource contention)
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 10 -s 8 -t 5 -f t10.log
+    grep "not granted" t10.log | head -5
+    grep "granting.*from freed" t10.log | head -5
+
+Pass:
+  - At least some "not granted, process blocked" entries exist.
+  - At least some "granting P* (from freed resources)" entries exist
+    (proves wait queues work correctly).
+Fail:  No blocking ever occurs (unlikely with 8 workers and 50 resources),
+       or no waiters ever get unblocked after being blocked.
+
+
+────────────────────────────────────────────────────────────────
+T11  Deadlock detection and resolution
+────────────────────────────────────────────────────────────────
+Run with a high worker count and short time limit to increase deadlock odds:
+
+Command:
+    ./oss -n 30 -s 18 -t 8 -f t11.log
+    grep -i "deadlock" t11.log
+
+Pass:
+  - "Master running deadlock detection" appears every ~1 sim-second.
+  - When deadlock occurs: "Processes P* deadlocked" line present.
+  - Followed by "Killing process P*" and resource release list.
+  - Subsequent detection runs show fewer/no deadlocked processes.
+  - "Processes terminated by deadlock" in statistics >= 1 (if deadlock occurred).
+Fail:
+  - No deadlock detection lines at all.
+  - Program hangs after "deadlocked" message.
+  - Statistics show 0 deadlock runs.
+
+Note: Deadlock may not occur every run. If t11.log shows 0 kills but detection
+ran, that is acceptable — it means no deadlock occurred in that particular run.
+
+
+────────────────────────────────────────────────────────────────
+T12  Clock advances correctly (not frozen)
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 5 -s 3 -t 5 -f t12.log
+    grep "granting\|releasing\|blocked" t12.log | awk -F'time ' '{print $2}' | sort -u | head -20
+
+Pass:  Timestamps are spread across many different values (not all identical).
+       Events should span from ~0:100000000 through several simulated seconds.
+Fail:  All events show the same timestamp (e.g., "1:960000000") — clock frozen.
+       This was the original turn-flood bug; should be fixed with turn_sent.
+
+
+────────────────────────────────────────────────────────────────
+T13  Statistics output completeness
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 5 -s 3 -t 3 -f t13.log
+    tail -8 t13.log
+
+Pass:  Output contains all four statistics lines:
+  "Total resource requests:"
+  "Immediately granted:"      (with percentage)
+  "Deadlock detection runs:"
+  "Processes terminated by deadlock:"
+Fail:  Any statistics line missing.
+
+
+────────────────────────────────────────────────────────────────
+T14  Resource table format
+────────────────────────────────────────────────────────────────
+Command:
+    ./oss -n 5 -s 3 -t 5 -f t14.log
+    grep -A 15 "OSS Resource Table" t14.log | head -15
+
+Pass:  Table has a header row (R0 R1 ... R9), an "Avail:" row, and one row
+       per active process. Avail row values sum to <= 50 at all times.
+Fail:  Table missing, malformed, or available + allocated > 50 for any resource.
+
+
+────────────────────────────────────────────────────────────────
+T15  No orphan processes after exit
+────────────────────────────────────────────────────────────────
+Commands:
+    ./oss -n 5 -s 3 -t 3 &
+    wait
+    ps aux | grep worker | grep -v grep
+
+Pass:  No worker processes remain after oss exits.
+Fail:  Orphaned worker processes still running.
+
+
+────────────────────────────────────────────────────────────────
+Quick regression checklist
+────────────────────────────────────────────────────────────────
+After any code change, run this sequence before submitting:
+
+    make clean && make                          # T01
+    ./oss -h                                    # T02
+    ./oss -n 3 -s 2 -t 3 -f quick.log          # T03
+    ipcs -m | grep 0x47605; ipcs -q | grep 0x47606   # T04 (expect no output)
+    grep "deadlock detection" quick.log         # T11 (at least one line)
+    tail -6 quick.log                           # T13 (statistics present)
+    grep "granting\|releasing" quick.log | awk -F'time ' '{print $2}' | sort -u | wc -l
+    # T12: count should be > 5 distinct timestamps
