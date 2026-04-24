@@ -334,7 +334,7 @@ rm -f t20.log
 echo ""
 echo "[T21] SIGALRM 30-second hard limit (slow — ~33s)"
 START=$(date +%s)
-timeout 40 ./oss -n 9999 -s 18 -i 1 -f t21.log > /dev/null 2>&1
+timeout 40 ./oss -n 9999 -s 18 -i 1 -t 60 -f t21.log > /dev/null 2>&1
 END=$(date +%s)
 ELAPSED=$((END - START))
 ORPHANS=$(pgrep -x worker 2>/dev/null | wc -l)

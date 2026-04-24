@@ -761,12 +761,7 @@ static void run_deadlock_detection(void)
     }
     log_line("Killing process P%d: Resources released are as follows: %s", victim, rbuf);
 
-    /* Send terminate to the victim; it will send an ack (MSG_TERMINATE)
-     * which handle_terminate() will receive and skip (occupied == 0 by then). */
-    send_to_worker(victim, 0, MSG_TERMINATE);
-    turn_sent[victim] = 1;  /* mark as "waiting for reply" to block further turns */
-
-    /* Save PID before zeroing the PCB so waitpid() gets the correct value. */
+    /* Save PID before zeroing the PCB so kill/waitpid get the correct value. */
     pid_t victim_pid = shm->proctable[victim].pid;
 
     /* Release all resources and dequeue the victim from any wait queues. */
@@ -776,9 +771,13 @@ static void run_deadlock_detection(void)
     currently_running--;
     stat_dl_kills++;
 
-    /* Non-blocking reap: the worker may not have exited yet; reap_zombies()
-     * will collect it on a later main-loop iteration if it hasn't. */
-    waitpid(victim_pid, NULL, WNOHANG);
+    /* SIGKILL cannot be caught or ignored: the victim dies immediately.
+     * Blocking waitpid ensures the process is fully gone before we return,
+     * so currently_running accurately reflects the live count and the main
+     * loop cannot fork a replacement while the victim is still visible to
+     * pgrep (which would cause the simultaneous-cap test to see s+1 workers). */
+    kill(victim_pid, SIGKILL);
+    waitpid(victim_pid, NULL, 0);
 
     /* Recurse: releasing the victim's resources may have unblocked other
      * processes, potentially clearing the rest of the deadlock set. */
