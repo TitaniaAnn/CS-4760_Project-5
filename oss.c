@@ -972,8 +972,9 @@ static void sig_handler(int sig)
 {
     (void)sig;  /* all three signals share this handler; signal identity is irrelevant */
 
-    /* Kill all children with SIGKILL (cannot be caught or ignored) so they
-     * die immediately regardless of what syscall they're blocked in. */
+    /* Send SIGKILL to every known live worker.  SIGKILL cannot be caught or
+     * ignored, so workers that are running (not blocked in a syscall) die
+     * immediately.  Workers blocked in msgrcv are handled below. */
     if (shm) {
         for (int i = 0; i < MAX_PROCESSES; i++) {
             if (shm->proctable[i].occupied)
@@ -981,13 +982,23 @@ static void sig_handler(int sig)
         }
     }
 
-    /* Reap every child before exiting so no worker appears as an orphan
-     * in ps after oss is gone.  Returns when no children remain (ECHILD). */
-    while (waitpid(-1, NULL, 0) > 0)
-        ;
-
+    /* Write final statistics before closing the log, then remove all IPC.
+     * Deleting the message queue (msgctl IPC_RMID inside cleanup_ipc) causes
+     * any worker blocked in msgrcv to return immediately with EIDRM, so it
+     * calls exit(1) on its own — even before SIGKILL is fully delivered by
+     * the kernel (important on WSL2 where IPC signal delivery can lag). */
     print_statistics();
     cleanup_ipc();
+
+    /* Give workers a moment to notice EIDRM and exit, then reap with
+     * WNOHANG.  250 ms is far more than enough: msgrcv returns EIDRM in
+     * microseconds once the queue is removed.  We use WNOHANG so oss never
+     * blocks here; any worker that is somehow still alive becomes an orphan
+     * (reparented to init) and will be collected by the OS. */
+    usleep(250000);
+    while (waitpid(-1, NULL, WNOHANG) > 0)
+        ;
+
     exit(0);
 }
 
