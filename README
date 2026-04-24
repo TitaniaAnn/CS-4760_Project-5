@@ -107,7 +107,11 @@ Deadlock detection (every 1 simulated second)
   (which may unblock other processes), then re-runs detection.
 
 Simulated clock
-  Increments by 10 ms (10,000,000 ns) each main-loop iteration.
+  Advances 1:1 with real wall time using CLOCK_MONOTONIC.  Each
+  main-loop iteration measures the actual elapsed nanoseconds since the
+  previous call and adds that amount to the sim clock (capped at 1 s to
+  guard against large scheduler preemptions).  CLOCK_INC_NS (10 ms) is
+  retained as a reference constant but is not used at runtime.
   Only oss writes; workers read to check their time limit.
 
 Logging

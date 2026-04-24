@@ -759,7 +759,7 @@ static void run_deadlock_detection(void)
             off += snprintf(rbuf + off, sizeof(rbuf) - (size_t)off,
                             "R%d:%d ", r, shm->proctable[victim].allocation[r]);
     }
-    log_line("Killing process P%d: Resources released: %s", victim, rbuf);
+    log_line("Killing process P%d: Resources released are as follows: %s", victim, rbuf);
 
     /* Send terminate to the victim; it will send an ack (MSG_TERMINATE)
      * which handle_terminate() will receive and skip (occupied == 0 by then). */

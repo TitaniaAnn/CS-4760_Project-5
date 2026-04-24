@@ -135,7 +135,7 @@ rm -f t06.log
 echo ""
 echo "[T07] Wall-clock forking cap"
 timeout 40 ./oss -n 9999 -s 5 -t 3 -f t07.log > /dev/null 2>&1
-FORKED=$(grep -c "forked worker" t07.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t07.log 2>/dev/null; true)
 if [ "$FORKED" -gt 0 ] && [ "$FORKED" -lt 200 ] && ipc_clean; then
     pass "forking capped at $FORKED workers (well under n=9999), WALL_CLOCK_LIMIT enforced, IPC clean"
 else
@@ -162,8 +162,8 @@ echo ""
 echo "[T09] Resource blocking and unblocking"
 timeout 35 ./oss -n 10 -s 8 -t 5 -f t09.log > /dev/null 2>&1
 cleanup_ipc
-BLOCKED=$(grep -c "not granted" t09.log 2>/dev/null || echo 0)
-UNBLOCKED=$(grep -c "from freed resources" t09.log 2>/dev/null || echo 0)
+BLOCKED=$(grep -c "not granted" t09.log 2>/dev/null; true)
+UNBLOCKED=$(grep -c "from freed resources" t09.log 2>/dev/null; true)
 if [ "$BLOCKED" -gt 0 ] && [ "$UNBLOCKED" -gt 0 ]; then
     pass "blocked=$BLOCKED events, unblocked-from-queue=$UNBLOCKED events"
 elif [ "$BLOCKED" -gt 0 ]; then
@@ -178,7 +178,7 @@ echo ""
 echo "[T10] Deadlock detection runs every ~1 sim-second"
 timeout 35 ./oss -n 15 -s 12 -t 8 -f t10.log > /dev/null 2>&1
 cleanup_ipc
-DL_RUNS=$(grep -c "running deadlock detection" t10.log 2>/dev/null || echo 0)
+DL_RUNS=$(grep -c "running deadlock detection" t10.log 2>/dev/null; true)
 if [ "$DL_RUNS" -gt 0 ]; then
     DL_KILLS=$(grep "terminated by deadlock" t10.log | grep -oP '[0-9]+$' | tail -1)
     pass "deadlock detection ran $DL_RUNS times; kills=${DL_KILLS:-0}"
@@ -234,7 +234,7 @@ echo ""
 echo "[T14] Serial execution: -n 3 -s 1 -t 2 -i 50"
 timeout 50 ./oss -n 3 -s 1 -t 2 -i 50 -f t14.log > /dev/null 2>&1
 RC=$?
-FORKED=$(grep -c "forked worker" t14.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t14.log 2>/dev/null; true)
 if [ "$RC" -eq 0 ] && [ "$FORKED" -ge 1 ] && ipc_clean; then
     pass "serial run completed, $FORKED worker(s) forked, IPC clean"
 else
@@ -250,7 +250,7 @@ timeout 50 ./oss -n 18 -s 18 -i 100 -f t15.log > /dev/null 2>&1
 RC=$?
 DL_KILLS=$(grep "terminated by deadlock" t15.log 2>/dev/null | grep -oP '[0-9]+$' | tail -1)
 DL_KILLS=${DL_KILLS:-0}
-DL_RUNS=$(grep -c "running deadlock detection" t15.log 2>/dev/null || echo 0)
+DL_RUNS=$(grep -c "running deadlock detection" t15.log 2>/dev/null; true)
 if [ "$RC" -eq 0 ] && [ "$DL_RUNS" -gt 0 ] && ipc_clean; then
     pass "completed n=18 s=18: $DL_KILLS deadlock kill(s) across $DL_RUNS detection run(s), IPC clean"
 else
@@ -264,7 +264,7 @@ echo ""
 echo "[T16] Short worker lifetime: -n 10 -s 5 -t 1 -i 100"
 timeout 50 ./oss -n 10 -s 5 -t 1 -i 100 -f t16.log > /dev/null 2>&1
 RC=$?
-FORKED=$(grep -c "forked worker" t16.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t16.log 2>/dev/null; true)
 if [ "$RC" -eq 0 ] && [ "$FORKED" -ge 1 ] && ipc_clean; then
     pass "short-lifetime run completed, $FORKED worker(s) forked, IPC clean"
 else
@@ -278,7 +278,7 @@ echo ""
 echo "[T17] Long worker lifetime: -n 8 -s 4 -t 10 -i 200"
 timeout 50 ./oss -n 8 -s 4 -t 10 -i 200 -f t17.log > /dev/null 2>&1
 RC=$?
-FORKED=$(grep -c "forked worker" t17.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t17.log 2>/dev/null; true)
 DL_KILLS=$(grep "terminated by deadlock" t17.log 2>/dev/null | grep -oP '[0-9]+$' | tail -1)
 if [ "$RC" -eq 0 ] && [ "$FORKED" -ge 1 ] && ipc_clean; then
     pass "long-lifetime run completed, $FORKED worker(s) forked, ${DL_KILLS:-0} deadlock kill(s), IPC clean"
@@ -293,7 +293,7 @@ echo ""
 echo "[T18] Fast launch interval: -n 10 -s 5 -t 3 -i 10"
 timeout 50 ./oss -n 10 -s 5 -t 3 -i 10 -f t18.log > /dev/null 2>&1
 RC=$?
-FORKED=$(grep -c "forked worker" t18.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t18.log 2>/dev/null; true)
 if [ "$RC" -eq 0 ] && [ "$FORKED" -ge 1 ] && ipc_clean; then
     pass "fast-launch run completed, $FORKED worker(s) forked, IPC clean"
 else
@@ -307,7 +307,7 @@ echo ""
 echo "[T19] Single worker: -n 1 -s 1"
 timeout 15 ./oss -n 1 -s 1 -t 3 -i 50 -f t19.log > /dev/null 2>&1
 RC=$?
-FORKED=$(grep -c "forked worker" t19.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t19.log 2>/dev/null; true)
 if [ "$RC" -eq 0 ] && [ "$FORKED" -eq 1 ] && ipc_clean; then
     pass "exactly 1 worker forked (n-cap enforced), IPC clean"
 else
@@ -321,7 +321,7 @@ echo ""
 echo "[T20] s > n edge case: -n 3 -s 10"
 timeout 50 ./oss -n 3 -s 10 -t 3 -i 50 -f t20.log > /dev/null 2>&1
 RC=$?
-FORKED=$(grep -c "forked worker" t20.log 2>/dev/null || echo 0)
+FORKED=$(grep -c "forked worker" t20.log 2>/dev/null; true)
 if [ "$RC" -eq 0 ] && [ "$FORKED" -le 3 ] && ipc_clean; then
     pass "n=3 s=10: only $FORKED worker(s) forked (n-cap enforced), IPC clean"
 else
@@ -339,7 +339,7 @@ END=$(date +%s)
 ELAPSED=$((END - START))
 ORPHANS=$(pgrep -x worker 2>/dev/null | wc -l)
 if [ "$ELAPSED" -ge 25 ] && [ "$ELAPSED" -le 38 ] && ipc_clean && [ "$ORPHANS" -eq 0 ]; then
-    FORKED=$(grep -c "forked worker" t21.log 2>/dev/null || echo 0)
+    FORKED=$(grep -c "forked worker" t21.log 2>/dev/null; true)
     pass "SIGALRM fired at ~${ELAPSED}s ($FORKED workers forked), IPC clean, no orphans"
 else
     fail "elapsed=${ELAPSED}s (expected 25-38) ipc_clean=$(ipc_clean && echo yes || echo no) orphans=$ORPHANS"
